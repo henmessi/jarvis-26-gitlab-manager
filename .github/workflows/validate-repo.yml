@@ -1,0 +1,272 @@
+name: Validate Repository
+
+# Trigger on push to any branch and pull requests to main/develop
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Validate branch naming convention
+  validate-branch:
+    name: Validate Branch Name
+    runs-on: ubuntu-latest
+    if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/develop'
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Extract branch name
+        id: extract_branch
+        run: |
+          # Get branch name from GitHub ref
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "Branch name: $BRANCH_NAME"
+
+      - name: Validate branch naming convention
+        run: |
+          BRANCH="${{ steps.extract_branch.outputs.branch }}"
+
+          # Define valid patterns from STANDARD-GIT-BRANCH-POLICY.md
+          VALID=false
+
+          # Check against each pattern
+          if [[ "$BRANCH" =~ ^main$ ]] || \
+             [[ "$BRANCH" =~ ^develop$ ]] || \
+             [[ "$BRANCH" =~ ^feature/[a-z0-9-]+$ ]] || \
+             [[ "$BRANCH" =~ ^fix/[a-z0-9-]+$ ]] || \
+             [[ "$BRANCH" =~ ^hotfix/[a-z0-9-]+$ ]] || \
+             [[ "$BRANCH" =~ ^claude/[a-z0-9-]+-[A-Za-z0-9]{24,32}$ ]] || \
+             [[ "$BRANCH" =~ ^agent/[a-z0-9-]+/[a-z0-9-]+-[A-Za-z0-9]{24,32}$ ]] || \
+             [[ "$BRANCH" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VALID=true
+          fi
+
+          if [[ "$VALID" == "false" ]]; then
+            echo "❌ Branch name '$BRANCH' does not follow naming convention"
+            echo ""
+            echo "Valid patterns:"
+            echo "  - main"
+            echo "  - develop"
+            echo "  - feature/<name>"
+            echo "  - fix/<name>"
+            echo "  - hotfix/<name>"
+            echo "  - claude/<task>-<session-id>"
+            echo "  - agent/<type>/<task>-<session-id>"
+            echo "  - release/v<major>.<minor>.<patch>"
+            echo ""
+            echo "See knowledge/standards/STANDARD-GIT-BRANCH-POLICY.md for details"
+            exit 1
+          fi
+
+          echo "✓ Branch name is valid: $BRANCH"
+
+  # Job 2: Validate knowledge structure
+  validate-knowledge:
+    name: Validate Knowledge Structure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Check knowledge directory structure
+        run: |
+          echo "Validating knowledge directory structure..."
+
+          # Required directories
+          REQUIRED_DIRS=(
+            "knowledge"
+            "knowledge/standards"
+            "knowledge/reports"
+            "knowledge/tasks"
+          )
+
+          ALL_VALID=true
+
+          for dir in "${REQUIRED_DIRS[@]}"; do
+            if [[ -d "$dir" ]]; then
+              echo "✓ $dir exists"
+            else
+              echo "⚠️  $dir does not exist (will be created if needed)"
+            fi
+          done
+
+          # Check for common file format issues
+          echo ""
+          echo "Checking markdown files..."
+
+          if command -v markdownlint >/dev/null 2>&1; then
+            markdownlint knowledge/**/*.md || true
+          else
+            echo "Note: markdownlint not installed, skipping markdown validation"
+          fi
+
+          echo "✓ Knowledge structure validation complete"
+
+  # Job 3: Validate scripts
+  validate-scripts:
+    name: Validate Shell Scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck on git scripts
+        run: |
+          if [[ -d "scripts/git" ]]; then
+            echo "Running shellcheck on git scripts..."
+            shellcheck scripts/git/*.sh || true
+            echo "✓ Script validation complete"
+          else
+            echo "No scripts to validate"
+          fi
+
+  # Job 4: Run tests (if applicable)
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Detect test framework and run tests
+        run: |
+          echo "Checking for test frameworks..."
+
+          # Check for Node.js tests
+          if [[ -f "package.json" ]]; then
+            echo "Found package.json, checking for test script..."
+            if grep -q '"test"' package.json; then
+              npm install
+              npm test
+            else
+              echo "No test script found in package.json"
+            fi
+
+          # Check for Python tests
+          elif [[ -f "pytest.ini" ]] || [[ -f "setup.py" ]]; then
+            echo "Found Python project, running pytest..."
+            pip install pytest
+            pytest
+
+          # Check for Makefile with test target
+          elif [[ -f "Makefile" ]] && grep -q "^test:" Makefile; then
+            echo "Found Makefile with test target..."
+            make test
+
+          else
+            echo "No tests found - skipping"
+          fi
+
+  # Job 5: Lint and format check
+  lint:
+    name: Lint Files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Lint markdown files
+        run: |
+          # Install markdownlint-cli if markdown files exist
+          if find . -name "*.md" -type f | grep -q .; then
+            npm install -g markdownlint-cli
+            markdownlint '**/*.md' --ignore node_modules || true
+          fi
+
+      - name: Lint JSON files
+        run: |
+          # Check JSON files for syntax errors
+          if find . -name "*.json" -type f | grep -q .; then
+            echo "Validating JSON files..."
+            for file in $(find . -name "*.json" -not -path "*/node_modules/*"); do
+              echo "Checking $file..."
+              python3 -m json.tool "$file" >/dev/null || echo "❌ Invalid JSON: $file"
+            done
+          fi
+
+      - name: Lint YAML files
+        run: |
+          # Install yamllint
+          if find . -name "*.yml" -o -name "*.yaml" | grep -q .; then
+            pip install yamllint
+            yamllint . || true
+          fi
+
+  # Job 6: Security scan (basic)
+  security:
+    name: Basic Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Check for secrets in code
+        run: |
+          echo "Scanning for potential secrets..."
+
+          # Simple patterns to check
+          PATTERNS=(
+            "password\s*=\s*['\"][^'\"]+['\"]"
+            "api_key\s*=\s*['\"][^'\"]+['\"]"
+            "secret\s*=\s*['\"][^'\"]+['\"]"
+            "token\s*=\s*['\"][^'\"]+['\"]"
+          )
+
+          FOUND=false
+
+          for pattern in "${PATTERNS[@]}"; do
+            if grep -r -i -E "$pattern" . --exclude-dir=.git --exclude-dir=node_modules; then
+              FOUND=true
+            fi
+          done
+
+          if [[ "$FOUND" == "true" ]]; then
+            echo "⚠️  Potential secrets found in code. Please review."
+            echo "Note: This is a basic check. Use tools like git-secrets for comprehensive scanning."
+          else
+            echo "✓ No obvious secrets detected"
+          fi
+
+  # Summary job - only runs if all checks pass
+  all-checks-passed:
+    name: All Checks Passed
+    runs-on: ubuntu-latest
+    needs: [validate-branch, validate-knowledge, validate-scripts, test, lint, security]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "=========================================="
+          echo "  Repository Validation Summary"
+          echo "=========================================="
+          echo ""
+
+          # Check if any job failed
+          if [[ "${{ needs.validate-branch.result }}" == "failure" ]] || \
+             [[ "${{ needs.validate-knowledge.result }}" == "failure" ]] || \
+             [[ "${{ needs.validate-scripts.result }}" == "failure" ]] || \
+             [[ "${{ needs.test.result }}" == "failure" ]] || \
+             [[ "${{ needs.lint.result }}" == "failure" ]] || \
+             [[ "${{ needs.security.result }}" == "failure" ]]; then
+            echo "❌ Some checks failed. Please review the logs above."
+            exit 1
+          fi
+
+          echo "✓ All validation checks passed! 🎉"
