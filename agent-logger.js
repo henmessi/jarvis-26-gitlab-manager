@@ -62,19 +62,18 @@ async function logAgentMessage({
   const messageId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
   try {
-    const { data, error } = await supabase
+    const { data, error} = await supabase
       .from('agent_communications')
       .insert({
         message_id: messageId,
         timestamp: new Date().toISOString(),
-        from_agent: from,
-        to_agent: to,
-        message: message,
+        source_agent: from,
+        target_agent: to,
+        payload: { message: message, ...metadata },
         message_type: messageType,
         conversation_id: conversationId,
         status: 'sent',
-        tags: [...tags, from, to, messageType],
-        metadata: metadata
+        tags: [...tags, from, to, messageType]
       })
       .select()
       .single();
